@@ -68,6 +68,20 @@ type EmbeddedPointerSquash struct {
 	Vunique string
 }
 
+type BasicMapStructure struct {
+	Vunique string     `mapstructure:"vunique"`
+	Vtime   *time.Time `mapstructure:"time"`
+}
+
+type NestedPointerWithMapstructure struct {
+	Vbar *BasicMapStructure `mapstructure:"vbar"`
+}
+
+type EmbeddedPointerSquashWithNestedMapstructure struct {
+	*NestedPointerWithMapstructure `mapstructure:",squash"`
+	Vunique                        string
+}
+
 type EmbeddedAndNamed struct {
 	Basic
 	Named   Basic
@@ -122,6 +136,11 @@ type NilPointer struct {
 type Slice struct {
 	Vfoo string
 	Vbar []string
+}
+
+type SliceOfByte struct {
+	Vfoo string
+	Vbar []byte
 }
 
 type SliceOfAlias struct {
@@ -557,6 +576,21 @@ func TestDecode_EmbeddedArray(t *testing.T) {
 	}
 }
 
+func TestDecode_decodeSliceWithArray(t *testing.T) {
+	t.Parallel()
+
+	var result []int
+	input := [1]int{1}
+	expected := []int{1}
+	if err := Decode(input, &result); err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if !reflect.DeepEqual(expected, result) {
+		t.Errorf("wanted %+v, got %+v", expected, result)
+	}
+}
+
 func TestDecode_EmbeddedNoSquash(t *testing.T) {
 	t.Parallel()
 
@@ -717,6 +751,74 @@ func TestDecode_EmbeddedPointerSquash_FromMapToStruct(t *testing.T) {
 	}
 }
 
+func TestDecode_EmbeddedPointerSquashWithNestedMapstructure_FromStructToMap(t *testing.T) {
+	t.Parallel()
+
+	vTime := time.Now()
+
+	input := EmbeddedPointerSquashWithNestedMapstructure{
+		NestedPointerWithMapstructure: &NestedPointerWithMapstructure{
+			Vbar: &BasicMapStructure{
+				Vunique: "bar",
+				Vtime:   &vTime,
+			},
+		},
+		Vunique: "foo",
+	}
+
+	var result map[string]interface{}
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+	expected := map[string]interface{}{
+		"vbar": map[string]interface{}{
+			"vunique": "bar",
+			"time":    &vTime,
+		},
+		"Vunique": "foo",
+	}
+
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("result should be %#v: got %#v", expected, result)
+	}
+}
+
+func TestDecode_EmbeddedPointerSquashWithNestedMapstructure_FromMapToStruct(t *testing.T) {
+	t.Parallel()
+
+	vTime := time.Now()
+
+	input := map[string]interface{}{
+		"vbar": map[string]interface{}{
+			"vunique": "bar",
+			"time":    &vTime,
+		},
+		"Vunique": "foo",
+	}
+
+	result := EmbeddedPointerSquashWithNestedMapstructure{
+		NestedPointerWithMapstructure: &NestedPointerWithMapstructure{},
+	}
+	err := Decode(input, &result)
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+	expected := EmbeddedPointerSquashWithNestedMapstructure{
+		NestedPointerWithMapstructure: &NestedPointerWithMapstructure{
+			Vbar: &BasicMapStructure{
+				Vunique: "bar",
+				Vtime:   &vTime,
+			},
+		},
+		Vunique: "foo",
+	}
+
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("result should be %#v: got %#v", expected, result)
+	}
+}
+
 func TestDecode_EmbeddedSquashConfig(t *testing.T) {
 	t.Parallel()
 
@@ -810,6 +912,53 @@ func TestDecodeFrom_EmbeddedSquashConfig(t *testing.T) {
 		} else if !reflect.DeepEqual(v, "baz") {
 			t.Errorf("Named: vstring should be 'baz': %#v", v)
 		}
+	}
+}
+
+func TestDecodeFrom_EmbeddedSquashConfig_WithTags(t *testing.T) {
+	t.Parallel()
+
+	var v interface{}
+	var ok bool
+
+	input := EmbeddedSquash{
+		Basic: Basic{
+			Vstring: "foo",
+		},
+		Vunique: "bar",
+	}
+
+	result := map[string]interface{}{}
+	config := &DecoderConfig{
+		Squash: true,
+		Result: &result,
+	}
+	decoder, err := NewDecoder(config)
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	err = decoder.Decode(input)
+	if err != nil {
+		t.Fatalf("got an err: %s", err.Error())
+	}
+
+	if _, ok = result["Basic"]; ok {
+		t.Error("basic should not be present in map")
+	}
+
+	v, ok = result["Vstring"]
+	if !ok {
+		t.Error("vstring should be present in map")
+	} else if !reflect.DeepEqual(v, "foo") {
+		t.Errorf("vstring value should be 'foo': %#v", v)
+	}
+
+	v, ok = result["Vunique"]
+	if !ok {
+		t.Error("vunique should be present in map")
+	} else if !reflect.DeepEqual(v, "bar") {
+		t.Errorf("vunique value should be 'bar': %#v", v)
 	}
 }
 
@@ -1232,6 +1381,30 @@ func TestDecoder_ErrorUnused_NotSetable(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+func TestDecoder_ErrorUnset(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]interface{}{
+		"vstring": "hello",
+		"foo":     "bar",
+	}
+
+	var result Basic
+	config := &DecoderConfig{
+		ErrorUnset: true,
+		Result:     &result,
+	}
+
+	decoder, err := NewDecoder(config)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	err = decoder.Decode(input)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
 
 func TestMap(t *testing.T) {
 	t.Parallel()
@@ -1484,6 +1657,34 @@ func TestSlice(t *testing.T) {
 
 	testSliceInput(t, inputStringSlice, outputStringSlice)
 	testSliceInput(t, inputStringSlicePointer, outputStringSlice)
+}
+
+func TestNotEmptyByteSlice(t *testing.T) {
+	t.Parallel()
+
+	inputByteSlice := map[string]interface{}{
+		"vfoo": "foo",
+		"vbar": []byte(`{"bar": "bar"}`),
+	}
+
+	result := SliceOfByte{
+		Vfoo: "another foo",
+		Vbar: []byte(`{"bar": "bar bar bar bar bar bar bar bar"}`),
+	}
+
+	err := Decode(inputByteSlice, &result)
+	if err != nil {
+		t.Fatalf("got unexpected error: %s", err)
+	}
+
+	expected := SliceOfByte{
+		Vfoo: "foo",
+		Vbar: []byte(`{"bar": "bar"}`),
+	}
+
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("bad: %#v", result)
+	}
 }
 
 func TestInvalidSlice(t *testing.T) {
@@ -2231,6 +2432,14 @@ func TestMetadata(t *testing.T) {
 	if !reflect.DeepEqual(md.Unused, expectedUnused) {
 		t.Fatalf("bad unused: %#v", md.Unused)
 	}
+
+	expectedUnset := []string{
+		"Vbar.Vbool", "Vbar.Vdata", "Vbar.Vextra", "Vbar.Vfloat", "Vbar.Vint",
+		"Vbar.VjsonFloat", "Vbar.VjsonInt", "Vbar.VjsonNumber"}
+	sort.Strings(md.Unset)
+	if !reflect.DeepEqual(md.Unset, expectedUnset) {
+		t.Fatalf("bad unset: %#v", md.Unset)
+	}
 }
 
 func TestMetadata_Embedded(t *testing.T) {
@@ -2510,6 +2719,46 @@ func TestDecoder_MatchName(t *testing.T) {
 
 	if !reflect.DeepEqual(expected, actual) {
 		t.Fatalf("Decode() expected: %#v, got: %#v", expected, actual)
+	}
+}
+
+func TestDecoder_IgnoreUntaggedFields(t *testing.T) {
+	type Input struct {
+		UntaggedNumber int
+		TaggedNumber   int `mapstructure:"tagged_number"`
+		UntaggedString string
+		TaggedString   string `mapstructure:"tagged_string"`
+	}
+	input := &Input{
+		UntaggedNumber: 31,
+		TaggedNumber:   42,
+		UntaggedString: "hidden",
+		TaggedString:   "visible",
+	}
+
+	actual := make(map[string]interface{})
+	config := &DecoderConfig{
+		Result:               &actual,
+		IgnoreUntaggedFields: true,
+	}
+
+	decoder, err := NewDecoder(config)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	err = decoder.Decode(input)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
+	expected := map[string]interface{}{
+		"tagged_number": 42,
+		"tagged_string": "visible",
+	}
+
+	if !reflect.DeepEqual(expected, actual) {
+		t.Fatalf("Decode() expected: %#v\ngot: %#v", expected, actual)
 	}
 }
 
